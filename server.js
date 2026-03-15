@@ -1,3 +1,4 @@
+
 // ═══════════════════════════════════════════════════════════════════
 // EVOLIA SERVER v2 — Serveur multijoueur complet
 // ═══════════════════════════════════════════════════════════════════
@@ -160,26 +161,33 @@ app.post('/register', (req, res) => {
   const isNew = !db.players[key];
   db.players[key] = {
     ...(db.players[key] || {}),
-    username, code: code.toUpperCase(),
-    xp: db.players[key]?.xp || 0,
-    coins: db.players[key]?.coins || 0,
-    diamonds: db.players[key]?.diamonds || 0,
-    level: db.players[key]?.level || 1,
-    streak: db.players[key]?.streak || 0,
-    trophies: db.players[key]?.trophies || [],
-    owned: db.players[key]?.owned || [],
-    equipped: db.players[key]?.equipped || {},
-    botColor: db.players[key]?.botColor || '#7c5cbf',
-    responses: db.players[key]?.responses || {},
-    bpClaimed: db.players[key]?.bpClaimed || [],
-    avatar: db.players[key]?.avatar || '',
-    avatarType: db.players[key]?.avatarType || 'emoji',
-    friends: db.players[key]?.friends || [],
+    username,
+    code: code.toUpperCase(),
+    xp:           db.players[key]?.xp           || 0,
+    coins:        db.players[key]?.coins         || 0,
+    diamonds:     db.players[key]?.diamonds      || 0,
+    level:        db.players[key]?.level         || 1,
+    streak:       db.players[key]?.streak        || 0,
+    lastDate:     db.players[key]?.lastDate      || null,
+    trophies:     db.players[key]?.trophies      || [],
+    owned:        db.players[key]?.owned         || ['color_purple'],
+    equipped:     db.players[key]?.equipped      || {},
+    botColor:     db.players[key]?.botColor      || '#7c5cbf',
+    responses:    db.players[key]?.responses     || {},
+    bpClaimed:    db.players[key]?.bpClaimed     || [],
+    avatar:       db.players[key]?.avatar        || '',
+    avatarType:   db.players[key]?.avatarType    || 'emoji',
+    darkmode:     db.players[key]?.darkmode      || '0',
+    questState:   db.players[key]?.questState    || {},
+    friends:      db.players[key]?.friends       || [],
     friendRequests: db.players[key]?.friendRequests || [],
-    sentRequests: db.players[key]?.sentRequests || [],
-    isAdmin: db.players[key]?.isAdmin || false,
-    createdAt: db.players[key]?.createdAt || Date.now(),
-    lastSeen: Date.now(),
+    sentRequests: db.players[key]?.sentRequests  || [],
+    isAdmin:      db.players[key]?.isAdmin       || false,
+    clickerState:  db.players[key]?.clickerState  || {},
+    totalPlayTime: db.players[key]?.totalPlayTime || 0,
+    firstSeen:     db.players[key]?.firstSeen     || Date.now(),
+    createdAt:    db.players[key]?.createdAt     || Date.now(),
+    lastSeen:     Date.now(),
   };
   saveDB(db);
   res.json({ success: true, isNew, isAdmin: db.players[key].isAdmin, message: isNew ? 'Compte créé !' : 'Compte mis à jour !' });
@@ -207,22 +215,54 @@ app.post('/sync', requireAuth, (req, res) => {
   const db = req.db;
   const p = db.players[req.playerKey];
   const d = req.body;
-  if (d.xp !== undefined) p.xp = Math.max(p.xp || 0, d.xp);
-  if (d.coins !== undefined) p.coins = Math.max(p.coins || 0, d.coins);
-  if (d.diamonds !== undefined) p.diamonds = Math.max(p.diamonds || 0, d.diamonds);
-  if (d.streak !== undefined) p.streak = d.streak;
-  if (d.trophies) p.trophies = [...new Set([...(p.trophies||[]), ...d.trophies])];
-  if (d.owned) p.owned = [...new Set([...(p.owned||[]), ...d.owned])];
-  if (d.equipped) p.equipped = d.equipped;
-  if (d.botColor) p.botColor = d.botColor;
+
+  // ── Progression (prend toujours le max pour éviter la perte) ──
+  if (d.xp       !== undefined) p.xp       = Math.max(p.xp      ||0, d.xp);
+  if (d.coins    !== undefined) p.coins    = Math.max(p.coins   ||0, d.coins);
+  if (d.diamonds !== undefined) p.diamonds = Math.max(p.diamonds||0, d.diamonds);
+  if (d.level    !== undefined) p.level    = Math.max(p.level   ||1, d.level);
+  if (d.streak   !== undefined) p.streak   = d.streak;
+  if (d.lastDate !== undefined) p.lastDate = d.lastDate;
+
+  // ── Collections (merge, jamais réduire) ──
+  if (d.trophies && Array.isArray(d.trophies))
+    p.trophies = [...new Set([...(p.trophies||[]), ...d.trophies])];
+  if (d.owned && Array.isArray(d.owned))
+    p.owned = [...new Set([...(p.owned||[]), ...d.owned])];
+  if (d.bpClaimed && Array.isArray(d.bpClaimed))
+    p.bpClaimed = [...new Set([...(p.bpClaimed||[]), ...d.bpClaimed])];
+
+  // ── Cosmétiques (écrase avec les dernières valeurs) ──
+  if (d.equipped  && typeof d.equipped  === 'object') p.equipped  = d.equipped;
+  if (d.botColor)  p.botColor  = d.botColor;
+  if (d.avatar)    p.avatar    = d.avatar;
+  if (d.avatarType)p.avatarType= d.avatarType;
+  if (d.darkmode  !== undefined) p.darkmode = d.darkmode;
+
+  // ── Réponses apprises (merge + partage global) ──
   if (d.responses && typeof d.responses === 'object') {
     p.responses = { ...(p.responses||{}), ...d.responses };
-    // Share responses globally
-    Object.entries(d.responses).forEach(([q, a]) => { db.sharedResponses[q] = { answer: a, by: p.username, ts: Date.now() }; });
+    Object.entries(d.responses).forEach(([q, a]) => {
+      db.sharedResponses[q] = { answer: a, by: p.username, ts: Date.now() };
+    });
   }
-  if (d.bpClaimed) p.bpClaimed = [...new Set([...(p.bpClaimed||[]), ...d.bpClaimed])];
-  if (d.avatar) { p.avatar = d.avatar; p.avatarType = d.avatarType || 'emoji'; }
-  if (d.level) p.level = Math.max(p.level || 1, d.level);
+
+  // ── Clicker ──
+  if (d.clickerState && typeof d.clickerState === 'object') {
+    p.clickerState = d.clickerState;
+  }
+
+  // ── Quêtes ──
+  if (d.questState     && typeof d.questState     === 'object') p.questState     = d.questState;
+  if (d.clickerState   && typeof d.clickerState   === 'object') p.clickerState   = d.clickerState;
+
+  // ── Diamants achetés ──
+  if (d.purchasedDiamonds !== undefined)
+    p.purchasedDiamonds = Math.max(p.purchasedDiamonds||0, d.purchasedDiamonds);
+
+  // ── Admin flag ──
+  if (d.isAdmin !== undefined && p.isAdmin) p.isAdmin = d.isAdmin;
+
   p.lastSeen = Date.now();
   saveDB(db);
   res.json({ success: true, player: sanitize(p) });
@@ -232,6 +272,7 @@ app.get('/pull', requireAuth, (req, res) => {
   const p = req.db.players[req.playerKey];
   p.lastSeen = Date.now();
   saveDB(req.db);
+  // Return everything the client needs to restore full state
   res.json({ success: true, player: sanitize(p) });
 });
 
