@@ -376,6 +376,41 @@ app.post('/responses/add', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
+
+// ══════════════════════════════════════════════════════════════════
+// FRIEND CHAT — Chat privé entre amis
+// ══════════════════════════════════════════════════════════════════
+app.get('/friendchat', requireAuth, (req, res) => {
+  const db = req.db;
+  const me = db.players[req.playerKey];
+  const myFriends = new Set((me.friends || []).concat([req.playerKey]));
+  if (!db.friendMessages) db.friendMessages = [];
+  // Return only messages from me or my friends
+  const msgs = db.friendMessages
+    .filter(m => myFriends.has(m.userKey))
+    .slice(-80);
+  res.json({ success: true, messages: msgs });
+});
+
+app.post('/friendchat', requireAuth, (req, res) => {
+  const { message } = req.body;
+  if (!message || message.length > 300) return res.status(400).json({ error: 'Message invalide' });
+  const db = req.db;
+  const p = db.players[req.playerKey];
+  if (!db.friendMessages) db.friendMessages = [];
+  db.friendMessages.push({
+    userKey: req.playerKey,
+    username: p.username,
+    message,
+    avatar: p.avatar || '',
+    avatarType: p.avatarType || 'emoji',
+    ts: Date.now(),
+  });
+  if (db.friendMessages.length > 500) db.friendMessages = db.friendMessages.slice(-500);
+  saveDB(db);
+  res.json({ success: true });
+});
+
 // ══════════════════════════════════════════════════════════════════
 // START
 // ══════════════════════════════════════════════════════════════════
