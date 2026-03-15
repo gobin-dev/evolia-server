@@ -377,6 +377,47 @@ app.post('/responses/add', requireAuth, (req, res) => {
 });
 
 
+
+// ══════════════════════════════════════════════════════════════════
+// ADMIN STATS — Panel + PDF quotidien
+// ══════════════════════════════════════════════════════════════════
+app.get('/admin/stats', requireAdmin, (req, res) => {
+  const db = req.db;
+  const players = Object.values(db.players);
+  const now = Date.now();
+  const stats = {
+    totalPlayers: players.length,
+    onlinePlayers: players.filter(p => (now - (p.lastSeen||0)) < 5*60*1000).length,
+    activeLast24h: players.filter(p => (now - (p.lastSeen||0)) < 24*60*60*1000).length,
+    activeLast7d: players.filter(p => (now - (p.lastSeen||0)) < 7*24*60*60*1000).length,
+    totalXP: players.reduce((a,p) => a+(p.xp||0), 0),
+    avgLevel: players.length ? Math.round(players.reduce((a,p)=>a+(p.level||1),0)/players.length) : 0,
+    topPlayer: players.sort((a,b)=>(b.xp||0)-(a.xp||0))[0]?.username || 'N/A',
+    bannedCount: (db.bannedUsers||[]).length,
+    totalMessages: (db.messages||[]).length,
+    totalFriendMessages: (db.friendMessages||[]).length,
+    totalResponses: Object.keys(db.sharedResponses||{}).length,
+    leaderboard: players.sort((a,b)=>(b.xp||0)-(a.xp||0)).slice(0,10).map(p=>({
+      username: p.username, xp: p.xp||0, level: p.level||1,
+      lastSeen: p.lastSeen||0, online: (now-(p.lastSeen||0))<5*60*1000
+    })),
+    registrationsByDay: getRegistrationsByDay(players),
+    purchaseRequests: (db.purchaseRequests||[]).slice(-20),
+  };
+  res.json({ success: true, stats });
+});
+
+function getRegistrationsByDay(players) {
+  const days = {};
+  players.forEach(p => {
+    if(p.createdAt){
+      const day = new Date(p.createdAt).toISOString().slice(0,10);
+      days[day] = (days[day]||0) + 1;
+    }
+  });
+  return Object.entries(days).sort((a,b)=>a[0].localeCompare(b[0])).slice(-30).map(([date,count])=>({date,count}));
+}
+
 // ══════════════════════════════════════════════════════════════════
 // FRIEND CHAT — Chat privé entre amis
 // ══════════════════════════════════════════════════════════════════
