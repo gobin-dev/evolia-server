@@ -5,10 +5,98 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_FILE = path.join(__dirname, 'evolia_db.json');
+
+// ── EMAIL CONFIG ────────────────────────────────────────────────────
+// Variables d'environnement Railway:
+//   EMAIL_USER  = ton adresse Gmail (ex: ton.bot@gmail.com)
+//   EMAIL_PASS  = mot de passe d'application Gmail (pas ton vrai mdp!)
+//   Crée un "App Password" sur: myaccount.google.com/apppasswords
+const ADMIN_EMAIL = 'gabin7.lebon@gmail.com';
+const EMAIL_USER  = process.env.EMAIL_USER || '';
+const EMAIL_PASS  = process.env.EMAIL_PASS || '';
+
+let transporter = null;
+if(EMAIL_USER && EMAIL_PASS){
+  transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: EMAIL_USER, pass: EMAIL_PASS }
+  });
+  transporter.verify((err) => {
+    if(err) console.log('❌ Email config error:', err.message);
+    else console.log('✅ Email service ready');
+  });
+} else {
+  console.log('⚠️  EMAIL_USER/EMAIL_PASS not set — emails disabled');
+}
+
+async function sendEmail(to, subject, html){
+  if(!transporter) return false;
+  try {
+    await transporter.sendMail({
+      from: `"Évolia Bot" <${EMAIL_USER}>`,
+      to, subject, html
+    });
+    console.log('📧 Email sent to', to);
+    return true;
+  } catch(e){
+    console.error('❌ Email error:', e.message);
+    return false;
+  }
+}
+
+function buildReceiptHTML(username, userEmail, pack, coins, code, ts){
+  // Magic link — quand le joueur clique, le code s'entre automatiquement dans le bot
+  // Le joueur doit ouvrir son bot depuis le même appareil
+  const magicLink = `evolia://redeem/${code}`;
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+  body{font-family:Arial,sans-serif;background:#f4f1ff;margin:0;padding:20px}
+  .card{background:#fff;border-radius:16px;padding:30px;max-width:480px;margin:0 auto;box-shadow:0 4px 24px rgba(124,92,191,.12)}
+  .header{background:linear-gradient(135deg,#7c5cbf,#4c1d95);color:#fff;border-radius:10px;padding:20px;text-align:center;margin-bottom:20px}
+  .header h1{margin:0;font-size:1.6rem}
+  .row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0ecff}
+  .label{color:#7060a0;font-size:.9rem}
+  .value{font-weight:700;color:#1a1829}
+  .code{background:#f4f1ff;border:2px dashed #7c5cbf;border-radius:8px;padding:14px;text-align:center;margin:16px 0}
+  .code-val{font-size:1.8rem;font-weight:900;letter-spacing:4px;color:#7c5cbf}
+  .footer{text-align:center;color:#9080c0;font-size:.8rem;margin-top:20px}
+  .diamond{color:#22d3ee;font-size:1rem}
+</style></head>
+<body>
+<div class="card">
+  <div class="header">
+    <div style="font-size:2rem">🤖</div>
+    <h1>Évolia</h1>
+    <div style="opacity:.85;font-size:.9rem">Ticket de caisse</div>
+  </div>
+  <div class="row"><span class="label">Joueur</span><span class="value">${username}</span></div>
+  <div class="row"><span class="label">Email</span><span class="value">${userEmail}</span></div>
+  <div class="row"><span class="label">Pack acheté</span><span class="value">${pack}</span></div>
+  <div class="row"><span class="label">Pièces reçues</span><span class="value">${coins.toLocaleString('fr-FR')} 🪙</span></div>
+  <div class="row"><span class="label">Date</span><span class="value">${new Date(ts).toLocaleString('fr-FR')}</span></div>
+  <div class="code">
+    <div style="color:#7060a0;font-size:.8rem;margin-bottom:6px">Ton code de confirmation</div>
+    <div class="code-val">${code}</div>
+    <div style="color:#9080c0;font-size:.75rem;margin-top:10px">Copie ce code dans Évolia → Boutique → 💳 Acheter → Entrer le code</div>
+  </div>
+  <div style="text-align:center;margin:16px 0">
+    <a href="https://evolia.netlify.app?code=${code}" 
+       style="display:inline-block;background:linear-gradient(135deg,#7c5cbf,#4c1d95);color:#fff;text-decoration:none;padding:14px 28px;border-radius:12px;font-weight:700;font-size:1rem">
+      ✨ Entrer le code automatiquement
+    </a>
+    <div style="color:#9080c0;font-size:.7rem;margin-top:8px">Ouvre ton Évolia et clique sur ce bouton</div>
+  </div>
+  <div class="footer">Merci de ta confiance ! 💜<br>Évolia — assistant IA voxel</div>
+</div>
+</body></html>`;
+}
 
 app.use(cors({ origin: '*', methods: ['GET','POST','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','username','code','Authorization'], credentials: false }));
 app.options('*', cors());
@@ -291,14 +379,33 @@ app.post('/admin/unban', requireAdmin, (req, res) => {
 
 // Admin generate purchase code
 app.post('/admin/purchase-code', requireAdmin, (req, res) => {
-  const { username, coins } = req.body;
+  const { username, coins, pack } = req.body;
   if (!username || !coins) return res.status(400).json({ error: 'Données manquantes' });
   const db = req.db;
   if (!db.purchaseCodes) db.purchaseCodes = {};
   const code = Array.from({length:8}, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random()*32)]).join('');
-  db.purchaseCodes[code] = { username: username.toLowerCase(), coins, used: false, ts: Date.now() };
+  const ts = Date.now();
+  db.purchaseCodes[code] = { username: username.toLowerCase(), coins, used: false, ts };
+  // Mark request as done
+  if(db.purchaseRequests){
+    const req2 = db.purchaseRequests.find(r => r.username === username && !r.done);
+    if(req2) req2.done = true;
+  }
   saveDB(db);
-  res.json({ success: true, code, message: `Code ${code} généré pour ${username} (+${coins} pièces)` });
+
+  // Send receipt to player + admin
+  const player = db.players[username.toLowerCase()];
+  const userEmail = player?.email || '';
+  const packName = pack || `${coins} pièces`;
+  if(transporter){
+    const receiptHtml = buildReceiptHTML(username, userEmail||'—', packName, coins, code, ts);
+    // Email to player
+    if(userEmail) sendEmail(userEmail, `[Évolia] Ton code d'achat — ${packName}`, receiptHtml);
+    // Email to admin (copy)
+    sendEmail(ADMIN_EMAIL, `[Évolia] Code généré pour ${username} — ${packName}`, receiptHtml);
+  }
+
+  res.json({ success: true, code, message: `Code ${code} généré pour ${username} (+${coins} pièces)${userEmail ? ' — email envoyé à '+userEmail : ' — aucun email enregistré'}` });
 });
 
 // Use purchase code
@@ -326,12 +433,27 @@ app.get('/admin/purchases', requireAdmin, (req, res) => {
 
 // Submit purchase request (user)
 app.post('/purchase/request', requireAuth, (req, res) => {
-  const { pack, price, coins } = req.body;
+  const { pack, price, coins, email } = req.body;
   const db = req.db;
   if (!db.purchaseRequests) db.purchaseRequests = [];
-  db.purchaseRequests.push({ username: req.player.username, pack, price, coins, ts: Date.now(), done: false });
+  const request = { username: req.player.username, email: email||'', pack, price, coins, ts: Date.now(), done: false };
+  db.purchaseRequests.push(request);
+  if(email) db.players[req.playerKey].email = email;
   saveDB(db);
-  res.json({ success: true, message: 'Demande envoyée à l\'admin !' });
+
+  // Notify admin by email
+  if(transporter){
+    const adminHtml = '<div style="font-family:Arial,sans-serif;padding:20px"><h2>🛒 Nouvelle commande Évolia</h2>' +
+      '<p><b>Joueur :</b> ' + req.player.username + '</p>' +
+      '<p><b>Email joueur :</b> ' + (email||'non fourni') + '</p>' +
+      '<p><b>Pack :</b> ' + pack + '</p>' +
+      '<p><b>Pièces :</b> ' + coins + ' 🪙</p>' +
+      '<p><b>Date :</b> ' + new Date().toLocaleString('fr-FR') + '</p>' +
+      '<p style="color:#7c5cbf">Va dans le panel admin pour générer le code.</p></div>';
+    sendEmail(ADMIN_EMAIL, '[Évolia] Commande de ' + req.player.username, adminHtml);
+  }
+
+  res.json({ success: true, message: "Demande envoyée ! Tu recevras un email avec ton code de confirmation." });
 });
 
 // Get banned list (admin)
