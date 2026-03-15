@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════
+ // ═══════════════════════════════════════════════════════════════════
 // EVOLIA SERVER — Serveur multijoueur Node.js
 // Partage de progression, classement, amis
 // ═══════════════════════════════════════════════════════════════════
@@ -15,7 +15,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_FILE = path.join(__dirname, 'evolia_db.json');
 
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'username', 'code', 'Authorization'],
+  credentials: false
+}));
+app.options('*', cors());
 app.use(express.json({ limit: '2mb' }));
 
 // ─── Simple JSON database ──────────────────────────────────────────
@@ -222,3 +228,4 @@ app.listen(PORT, () => {
   console.log(`  GET  /chat           — Lire le chat global`);
   console.log(`  POST /chat           — Envoyer message\n`);
 });
+
