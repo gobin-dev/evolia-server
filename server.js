@@ -1,4 +1,4 @@
- // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
 // EVOLIA SERVER — Serveur multijoueur Node.js
 // Partage de progression, classement, amis
 // ═══════════════════════════════════════════════════════════════════
@@ -151,23 +151,90 @@ app.get('/player/:username', (req, res) => {
   res.json({ success: true, player: sanitize(p) });
 });
 
-// ─── FRIENDS ──────────────────────────────────────────────────────
-app.post('/friend/add', requireAuth, (req, res) => {
+// ─── FRIENDS + REQUESTS ───────────────────────────────────
+
+// Send friend request
+app.post('/friend/request', requireAuth, (req, res) => {
   const { friendName } = req.body;
   if (!friendName) return res.status(400).json({ error: 'Nom manquant' });
   const db = req.db;
-  const fKey = friendName.toLowerCase();
+  const fKey = friendName.toLowerCase().trim();
   if (!db.players[fKey]) return res.status(404).json({ error: 'Joueur introuvable' });
-  if (fKey === req.playerKey) return res.status(400).json({ error: 'Vous ne pouvez pas vous ajouter vous-même' });
-
-  const p = db.players[req.playerKey];
-  if (!p.friends) p.friends = [];
-  if (p.friends.includes(fKey)) return res.status(409).json({ error: 'Déjà ami' });
-  p.friends.push(fKey);
+  if (fKey === req.playerKey) return res.status(400).json({ error: "Impossible de s'ajouter soi-même" });
+  const me = db.players[req.playerKey];
+  const them = db.players[fKey];
+  if ((me.friends || []).includes(fKey)) return res.status(409).json({ error: 'Déjà ami !' });
+  if (!them.friendRequests) them.friendRequests = [];
+  if (!me.sentRequests) me.sentRequests = [];
+  if (me.sentRequests.includes(fKey)) return res.status(409).json({ error: 'Demande déjà envoyée' });
+  them.friendRequests.push({ from: req.playerKey, fromName: me.username, ts: Date.now() });
+  me.sentRequests.push(fKey);
   saveDB(db);
-  res.json({ success: true, message: `${db.players[fKey].username} ajouté !` });
+  res.json({ success: true, message: `Demande envoyée à ${them.username} !` });
 });
 
+// Accept friend request
+app.post('/friend/accept', requireAuth, (req, res) => {
+  const { friendName } = req.body;
+  const db = req.db;
+  const fKey = (friendName || '').toLowerCase().trim();
+  if (!db.players[fKey]) return res.status(404).json({ error: 'Joueur introuvable' });
+  const me = db.players[req.playerKey];
+  const them = db.players[fKey];
+  me.friendRequests = (me.friendRequests || []).filter(r => r.from !== fKey);
+  if (!them.sentRequests) them.sentRequests = [];
+  them.sentRequests = them.sentRequests.filter(k => k !== req.playerKey);
+  if (!me.friends) me.friends = [];
+  if (!them.friends) them.friends = [];
+  if (!me.friends.includes(fKey)) me.friends.push(fKey);
+  if (!them.friends.includes(req.playerKey)) them.friends.push(req.playerKey);
+  saveDB(db);
+  res.json({ success: true, message: `Vous êtes maintenant amis avec ${them.username} !` });
+});
+
+// Decline friend request
+app.post('/friend/decline', requireAuth, (req, res) => {
+  const { friendName } = req.body;
+  const db = req.db;
+  const fKey = (friendName || '').toLowerCase().trim();
+  const me = db.players[req.playerKey];
+  me.friendRequests = (me.friendRequests || []).filter(r => r.from !== fKey);
+  if (db.players[fKey]) db.players[fKey].sentRequests = (db.players[fKey].sentRequests || []).filter(k => k !== req.playerKey);
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// Remove friend
+app.post('/friend/remove', requireAuth, (req, res) => {
+  const { friendName } = req.body;
+  const db = req.db;
+  const fKey = (friendName || '').toLowerCase().trim();
+  const me = db.players[req.playerKey];
+  me.friends = (me.friends || []).filter(k => k !== fKey);
+  if (db.players[fKey]) db.players[fKey].friends = (db.players[fKey].friends || []).filter(k => k !== req.playerKey);
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// Get pending friend requests
+app.get('/friend/requests', requireAuth, (req, res) => {
+  const p = req.db.players[req.playerKey];
+  res.json({ success: true, requests: (p.friendRequests || []) });
+});
+
+// Get all players (for friend search)
+app.get('/players', (req, res) => {
+  const db = loadDB();
+  const players = Object.values(db.players).map(p => ({
+    username: p.username, xp: p.xp || 0, level: p.level || 1,
+    avatar: p.avatar || '', avatarType: p.avatarType || 'emoji',
+    botColor: p.botColor || '#7c5cbf',
+    online: (Date.now() - (p.lastSeen || 0)) < 5 * 60 * 1000,
+  }));
+  res.json({ success: true, players });
+});
+
+// Get friends list
 app.get('/friends', requireAuth, (req, res) => {
   const db = req.db;
   const p = db.players[req.playerKey];
@@ -183,7 +250,6 @@ app.get('/friends', requireAuth, (req, res) => {
   }).filter(Boolean);
   res.json({ success: true, friends });
 });
-
 // ─── GLOBAL CHAT ──────────────────────────────────────────────────
 app.get('/chat', (req, res) => {
   const db = loadDB();
@@ -228,4 +294,3 @@ app.listen(PORT, () => {
   console.log(`  GET  /chat           — Lire le chat global`);
   console.log(`  POST /chat           — Envoyer message\n`);
 });
-
