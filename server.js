@@ -1,7 +1,8 @@
 
 // ═══════════════════════════════════════════════════════════════════
-// EVOLIA SERVER v2 — Serveur multijoueur complet
+// EVOLIA SERVER v2 — Serveur multijoueur complet + Modération
 // ═══════════════════════════════════════════════════════════════════
+'use strict';
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -118,10 +119,25 @@ function initDB(db) {
   if (!db.sharedResponses) db.sharedResponses = {};
   if (!db.purchaseRequests) db.purchaseRequests = [];
   if (!db.bannedUsers) db.bannedUsers = [];
+  if (!db.moderators) db.moderators = [];
+  if (!db.bans) db.bans = {}; // key: username -> { reason, bannedBy, until, permanent }
   return db;
 }
 
 // ── AUTH ────────────────────────────────────────────────────────────
+function checkBan(db, key) {
+  const ban = db.bans && db.bans[key];
+  if (!ban) return null;
+  if (ban.permanent) return ban;
+  if (ban.until && Date.now() < ban.until) return ban;
+  // Expired — clean up
+  delete db.bans[key];
+  const idx = (db.bannedUsers||[]).indexOf(key);
+  if (idx !== -1) db.bannedUsers.splice(idx, 1);
+  saveDB(db);
+  return null;
+}
+
 function requireAuth(req, res, next) {
   const username = (req.headers.username || '').trim();
   const code = (req.headers.code || '').trim().toUpperCase();
@@ -130,7 +146,17 @@ function requireAuth(req, res, next) {
   initDB(db);
   const player = db.players[username.toLowerCase()];
   if (!player || player.code !== code) return res.status(403).json({ error: 'Identifiants incorrects' });
-  if (db.bannedUsers.includes(username.toLowerCase())) return res.status(403).json({ error: 'Compte banni' });
+  const ban = checkBan(db, username.toLowerCase());
+  if (ban) {
+    return res.status(403).json({
+      error: 'Compte banni',
+      banned: true,
+      reason: ban.reason || '',
+      until: ban.until || null,
+      permanent: ban.permanent || false,
+      bannedBy: ban.bannedBy || 'admin'
+    });
+  }
   req.player = player;
   req.playerKey = username.toLowerCase();
   req.db = db;
@@ -139,6 +165,15 @@ function requireAuth(req, res, next) {
 function requireAdmin(req, res, next) {
   requireAuth(req, res, () => {
     if (!req.player.isAdmin) return res.status(403).json({ error: 'Accès admin requis' });
+    next();
+  });
+}
+function requireMod(req, res, next) {
+  requireAuth(req, res, () => {
+    const db = req.db;
+    const isMod = req.player.isAdmin || (db.moderators||[]).includes(req.playerKey);
+    if (!isMod) return res.status(403).json({ error: 'Accès modérateur requis' });
+    req.isMod = true;
     next();
   });
 }
@@ -199,13 +234,21 @@ app.post('/login', (req, res) => {
   if (!username || !code) return res.status(400).json({ error: 'Données manquantes' });
   const db = loadDB(); initDB(db);
   const key = username.toLowerCase().trim();
-  if (db.bannedUsers.includes(key)) return res.status(403).json({ error: 'Compte banni' });
   const player = db.players[key];
   if (!player) return res.status(404).json({ error: 'Joueur introuvable' });
   if (player.code !== code.toUpperCase().trim()) return res.status(403).json({ error: 'Code incorrect' });
+  const ban = checkBan(db, key);
+  if (ban) {
+    return res.status(403).json({
+      error: 'Compte banni', banned: true,
+      reason: ban.reason || '', until: ban.until || null,
+      permanent: ban.permanent || false, bannedBy: ban.bannedBy || 'admin'
+    });
+  }
   player.lastSeen = Date.now();
   saveDB(db);
-  res.json({ success: true, player: sanitize(player) });
+  const isMod = (db.moderators||[]).includes(key);
+  res.json({ success: true, player: sanitize(player), isModerator: isMod });
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -397,27 +440,6 @@ app.post('/admin/setup', (req, res) => {
   res.json({ success: true, message: `${username} est maintenant admin !` });
 });
 
-// Ban user
-app.post('/admin/ban', requireAdmin, (req, res) => {
-  const { username } = req.body;
-  if (!username) return res.status(400).json({ error: 'Nom manquant' });
-  const db = req.db;
-  const key = username.toLowerCase();
-  if (!db.bannedUsers) db.bannedUsers = [];
-  if (!db.bannedUsers.includes(key)) db.bannedUsers.push(key);
-  saveDB(db);
-  res.json({ success: true, message: `${username} banni !` });
-});
-
-// Unban user
-app.post('/admin/unban', requireAdmin, (req, res) => {
-  const { username } = req.body;
-  const db = req.db;
-  db.bannedUsers = (db.bannedUsers||[]).filter(u => u !== username.toLowerCase());
-  saveDB(db);
-  res.json({ success: true, message: `${username} débanni !` });
-});
-
 // Admin generate purchase code
 app.post('/admin/purchase-code', requireAdmin, (req, res) => {
   const { username, coins, pack } = req.body;
@@ -497,9 +519,111 @@ app.post('/purchase/request', requireAuth, (req, res) => {
   res.json({ success: true, message: "Demande envoyée ! Tu recevras un email avec ton code de confirmation." });
 });
 
-// Get banned list (admin)
-app.get('/admin/banned', requireAdmin, (req, res) => {
-  res.json({ success: true, banned: req.db.bannedUsers || [] });
+// Get banned list (admin/mod)
+app.get('/admin/banned', requireMod, (req, res) => {
+  const db = req.db;
+  const bans = Object.entries(db.bans || {}).map(([key, b]) => ({
+    username: key, ...b,
+    active: b.permanent || (b.until && Date.now() < b.until)
+  }));
+  res.json({ success: true, bans });
+});
+
+// ── Ban user (admin = permanent OR temp, mod = temp only) ──
+app.post('/admin/ban', requireMod, (req, res) => {
+  const { username, reason, duration } = req.body; // duration in seconds, 0 = permanent
+  if (!username) return res.status(400).json({ error: 'Nom manquant' });
+  const db = req.db;
+  const key = username.toLowerCase().trim();
+  const targetPlayer = db.players[key];
+  if (!targetPlayer) return res.status(404).json({ error: 'Joueur introuvable' });
+  // Mods cannot ban admins
+  if (targetPlayer.isAdmin) return res.status(403).json({ error: 'Impossible de bannir un administrateur' });
+  // Mods can only do temp bans
+  const isAdmin = req.player.isAdmin;
+  const permanent = isAdmin && (duration === 0 || duration === '0' || duration === undefined);
+  if (!isAdmin && (permanent || !duration || duration <= 0)) {
+    return res.status(403).json({ error: 'Les modérateurs ne peuvent faire que des bans temporaires' });
+  }
+  const until = permanent ? null : Date.now() + (parseInt(duration) * 1000);
+  if (!db.bans) db.bans = {};
+  db.bans[key] = {
+    reason: (reason || 'Violation des règles').substring(0, 200),
+    bannedBy: req.player.username,
+    bannedByKey: req.playerKey,
+    until,
+    permanent,
+    ts: Date.now()
+  };
+  if (!db.bannedUsers) db.bannedUsers = [];
+  if (!db.bannedUsers.includes(key)) db.bannedUsers.push(key);
+  saveDB(db);
+  const durationStr = permanent ? 'définitivement' : `pour ${Math.round(parseInt(duration)/60)} min`;
+  res.json({ success: true, message: `${username} banni ${durationStr}` });
+});
+
+// ── Unban (admin only) ──
+app.post('/admin/unban', requireAdmin, (req, res) => {
+  const { username } = req.body;
+  const db = req.db;
+  const key = username.toLowerCase().trim();
+  delete db.bans[key];
+  db.bannedUsers = (db.bannedUsers||[]).filter(u => u !== key);
+  saveDB(db);
+  res.json({ success: true, message: `${username} débanni !` });
+});
+
+// ── Check ban status (called on startup) ──
+app.get('/ban/status', (req, res) => {
+  const username = (req.headers.username || '').trim().toLowerCase();
+  const code = (req.headers.code || '').trim().toUpperCase();
+  if (!username || !code) return res.status(401).json({ error: 'Non authentifié' });
+  const db = loadDB(); initDB(db);
+  const player = db.players[username];
+  if (!player || player.code !== code) return res.status(403).json({ error: 'Identifiants incorrects' });
+  const ban = checkBan(db, username);
+  if (!ban) return res.json({ banned: false });
+  res.json({
+    banned: true, reason: ban.reason || '', until: ban.until || null,
+    permanent: ban.permanent || false, bannedBy: ban.bannedBy || 'admin'
+  });
+});
+
+// ── Moderator management (admin only) ──
+app.post('/admin/moderator/add', requireAdmin, (req, res) => {
+  const { username } = req.body;
+  if (!username) return res.status(400).json({ error: 'Nom manquant' });
+  const db = req.db;
+  const key = username.toLowerCase().trim();
+  if (!db.players[key]) return res.status(404).json({ error: 'Joueur introuvable' });
+  if (db.players[key].isAdmin) return res.status(400).json({ error: 'Ce joueur est déjà admin' });
+  if (!db.moderators) db.moderators = [];
+  if (!db.moderators.includes(key)) db.moderators.push(key);
+  saveDB(db);
+  res.json({ success: true, message: `${username} est maintenant modérateur !` });
+});
+
+app.post('/admin/moderator/remove', requireAdmin, (req, res) => {
+  const { username } = req.body;
+  const db = req.db;
+  const key = username.toLowerCase().trim();
+  db.moderators = (db.moderators||[]).filter(u => u !== key);
+  saveDB(db);
+  res.json({ success: true, message: `${username} n'est plus modérateur` });
+});
+
+app.get('/admin/moderators', requireAdmin, (req, res) => {
+  const db = req.db;
+  res.json({ success: true, moderators: db.moderators || [] });
+});
+
+// Mod can delete a chat message
+app.delete('/chat/:ts', requireMod, (req, res) => {
+  const ts = parseInt(req.params.ts);
+  const db = req.db;
+  db.messages = (db.messages||[]).filter(m => m.ts !== ts);
+  saveDB(db);
+  res.json({ success: true });
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -515,7 +639,8 @@ app.post('/chat', requireAuth, (req, res) => {
   if (!message || message.length > 200) return res.status(400).json({ error: 'Message invalide' });
   const db = req.db;
   const p = db.players[req.playerKey];
-  db.messages.push({ username: p.username, message, avatar: p.avatar||'', avatarType: p.avatarType||'emoji', isAdmin: p.isAdmin||false, ts: Date.now() });
+  const isMod = (db.moderators||[]).includes(req.playerKey);
+  db.messages.push({ username: p.username, message, avatar: p.avatar||'', avatarType: p.avatarType||'emoji', isAdmin: p.isAdmin||false, isMod, ts: Date.now() });
   if (db.messages.length > 200) db.messages = db.messages.slice(-200);
   saveDB(db);
   res.json({ success: true });
