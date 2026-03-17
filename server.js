@@ -99,7 +99,7 @@ function buildReceiptHTML(username, userEmail, pack, coins, code, ts){
 </body></html>`;
 }
 
-app.use(cors({ origin: '*', methods: ['GET','POST','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','username','code','Authorization'], credentials: false }));
+app.use(cors({ origin: '*', methods: ['GET','POST','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','username','code','Authorization','x-admin-secret'], credentials: false }));
 app.options('*', cors());
 app.use(express.json({ limit: '5mb' }));
 
@@ -766,20 +766,27 @@ app.get('/admin/players-full', requireAdmin, (req, res) => {
   res.json({ success: true, players });
 });
 
-// ── Admin: export all player passwords (PDF data) ──
-app.get('/admin/passwords', requireAdmin, (req, res) => {
-  const db = req.db;
-  const players = Object.values(db.players).map(p => ({
-    username: p.username,
-    code: p.code,
-    email: p.email || '',
-    level: p.level || 1,
-    xp: p.xp || 0,
-    createdAt: p.createdAt || null,
-    lastSeen: p.lastSeen || null,
-    isAdmin: p.isAdmin || false,
-    isMod: (db.moderators || []).includes(p.username.toLowerCase()),
-  }));
+// ── Admin: export all player passwords (PDF) — POST avec secret ──
+app.post('/admin/passwords', (req, res) => {
+  const { adminSecret } = req.body;
+  const validSecret = process.env.ADMIN_SECRET || 'evolia-admin-2024';
+  if (!adminSecret || adminSecret !== validSecret) {
+    return res.status(403).json({ error: 'Secret admin invalide' });
+  }
+  const db = loadDB(); initDB(db);
+  const players = Object.values(db.players)
+    .sort((a, b) => (a.username||'').localeCompare(b.username||''))
+    .map(p => ({
+      username: p.username,
+      code: p.code,
+      email: p.email || '',
+      level: p.level || 1,
+      xp: p.xp || 0,
+      createdAt: p.createdAt || null,
+      lastSeen: p.lastSeen || null,
+      isAdmin: p.isAdmin || false,
+      isMod: (db.moderators || []).includes((p.username||'').toLowerCase()),
+    }));
   res.json({ success: true, players });
 });
 
