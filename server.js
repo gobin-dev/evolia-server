@@ -314,8 +314,8 @@ app.get('/pull', requireAuth, (req, res) => {
   const p = req.db.players[req.playerKey];
   p.lastSeen = Date.now();
   saveDB(req.db);
-  // Return everything the client needs to restore full state
-  res.json({ success: true, player: sanitize(p) });
+  const isMod = (req.db.moderators||[]).includes(req.playerKey);
+  res.json({ success: true, player: sanitize(p), isModerator: isMod });
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -536,12 +536,12 @@ app.post('/admin/ban', requireMod, (req, res) => {
   const key = username.toLowerCase().trim();
   const targetPlayer = db.players[key];
   if (!targetPlayer) return res.status(404).json({ error: 'Joueur introuvable' });
-  // Mods cannot ban admins
-  if (targetPlayer.isAdmin) return res.status(403).json({ error: 'Impossible de bannir un administrateur' });
-  // Mods can only do temp bans
   const isAdmin = req.player.isAdmin;
-  const permanent = isAdmin && (duration === 0 || duration === '0' || duration === undefined);
-  if (!isAdmin && (permanent || !duration || duration <= 0)) {
+  // Mods cannot ban admins — admins CAN ban other admins
+  if (!isAdmin && targetPlayer.isAdmin) return res.status(403).json({ error: 'Impossible de bannir un administrateur' });
+  // Mods can only do temp bans
+  const permanent = isAdmin && (duration === 0 || duration === '0' || duration === undefined || parseInt(duration) === 0);
+  if (!isAdmin && (!duration || parseInt(duration) <= 0)) {
     return res.status(403).json({ error: 'Les modérateurs ne peuvent faire que des bans temporaires' });
   }
   const until = permanent ? null : Date.now() + (parseInt(duration) * 1000);
@@ -737,6 +737,72 @@ app.post('/friendchat', requireAuth, (req, res) => {
   if (db.friendMessages.length > 500) db.friendMessages = db.friendMessages.slice(-500);
   saveDB(db);
   res.json({ success: true });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// ADMIN — Récupérer tous les joueurs avec codes (admin seulement)
+// ══════════════════════════════════════════════════════════════════
+app.get('/admin/players-full', requireAdmin, (req, res) => {
+  const db = req.db;
+  const players = Object.values(db.players).map(p => ({
+    username: p.username,
+    code: p.code,          // mot de passe en clair
+    level: p.level || 1,
+    xp: p.xp || 0,
+    lastSeen: p.lastSeen || 0,
+    isAdmin: p.isAdmin || false,
+    isMod: (db.moderators||[]).includes(p.username.toLowerCase()),
+  }));
+  res.json({ success: true, players });
+});
+
+// ── Admin: export all player passwords (PDF data) ──
+app.get('/admin/passwords', requireAdmin, (req, res) => {
+  const db = req.db;
+  const players = Object.values(db.players).map(p => ({
+    username: p.username,
+    code: p.code,
+    email: p.email || '',
+    level: p.level || 1,
+    xp: p.xp || 0,
+    createdAt: p.createdAt || null,
+    lastSeen: p.lastSeen || null,
+    isAdmin: p.isAdmin || false,
+    isMod: (db.moderators || []).includes(p.username.toLowerCase()),
+  }));
+  res.json({ success: true, players });
+});
+
+// ── Shared responses: allow overwrite (re-teachable) ──
+app.post('/responses/update', requireAuth, (req, res) => {
+  const { question, answer } = req.body;
+  if (!question || !answer) return res.status(400).json({ error: 'Données manquantes' });
+  const db = req.db;
+  if (!db.sharedResponses) db.sharedResponses = {};
+  // Always overwrite — allows re-teaching globally
+  db.sharedResponses[question.toLowerCase().trim()] = {
+    answer,
+    by: req.player.username,
+    ts: Date.now()
+  };
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// ── Moderator: check if current user is mod ──
+app.get('/mod/status', requireAuth, (req, res) => {
+  const db = req.db;
+  const isMod = (db.moderators || []).includes(req.playerKey);
+  res.json({ success: true, isModerator: isMod, isAdmin: req.player.isAdmin || false });
+});
+
+// ── Admin: get player detail with code (for password recovery) ──
+app.get('/admin/player-detail/:username', requireAdmin, (req, res) => {
+  const db = req.db;
+  const key = req.params.username.toLowerCase();
+  const p = db.players[key];
+  if (!p) return res.status(404).json({ error: 'Joueur introuvable' });
+  res.json({ success: true, player: p }); // full data including code
 });
 
 // ══════════════════════════════════════════════════════════════════
