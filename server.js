@@ -162,6 +162,16 @@ function requireAuth(req, res, next) {
   next();
 }
 function requireAdmin(req, res, next) {
+  // Accept either authenticated admin player OR adminSecret header
+  const secretHeader = (req.headers['x-admin-secret'] || req.body?.adminSecret || '').trim();
+  const validSecret = process.env.ADMIN_SECRET || 'evolia-admin-2024';
+  if (secretHeader && secretHeader === validSecret) {
+    // Secret bypass — still need a valid user for logging
+    req.db = loadDB(); initDB(req.db);
+    req.playerKey = 'admin';
+    req.player = { isAdmin: true, username: 'Admin' };
+    return next();
+  }
   requireAuth(req, res, () => {
     if (!req.player.isAdmin) return res.status(403).json({ error: 'Accès admin requis' });
     next();
