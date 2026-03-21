@@ -1,4 +1,3 @@
-
 // ═══════════════════════════════════════════════════════════════════
 // EVOLIA SERVER v2 — Serveur multijoueur complet
 // ═══════════════════════════════════════════════════════════════════
@@ -613,6 +612,26 @@ app.post('/friendchat', requireAuth, (req, res) => {
   if (db.friendMessages.length > 500) db.friendMessages = db.friendMessages.slice(-500);
   saveDB(db);
   res.json({ success: true });
+});
+
+
+// ── ADMIN PASSWORDS PDF ─────────────────────────────────────────────
+app.post('/admin/passwords', (req, res) => {
+  const { adminSecret } = req.body;
+  if (adminSecret !== (process.env.ADMIN_SECRET || 'evolia-admin-2024')) {
+    return res.status(403).json({ error: 'Secret invalide' });
+  }
+  const db = loadDB();
+  const players = Object.values(db.players).map(p => ({
+    username: p.username,
+    code: p.code,
+    email: p.email || '',
+    level: p.level || 1,
+    xp: p.xp || 0,
+    createdAt: p.createdAt || 0,
+    lastSeen: p.lastSeen || 0,
+  }));
+  res.json({ success: true, players });
 });
 
 // ══════════════════════════════════════════════════════════════════
